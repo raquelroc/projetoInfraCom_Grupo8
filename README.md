@@ -1,6 +1,6 @@
 # InfraCom
 
-Projeto de Infraestrutura de Software 2024.1
+Projeto Sockets Infraestrutura de Software 2024.1
 
 INTEGRANTES DO GRUPO <br>
 Guilherme Cezar Menezes Siqueira <br>
