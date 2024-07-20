@@ -27,17 +27,15 @@ def hash_key(key, lowerBound=0, upperBound=5, decimals=2):
 
     return roundedValue
 
-# OBS:
-# - Ao rodar o programa ele fica aberto, para rodar novamente feche o terminal 
-# - fiz isso para evitar um problema onde as threads daemon ainda estavam
-# - em execução enquanto o interpretador Python finalizava 
-class node:
+# OBS: ctrl+C para finalizar o programa
+class Node:
     def __init__(self, nodeID):
         # criação dos atributos do nó
         self.identifier = nodeID
         self.nodeInfo = tabelaRot[nodeID]
         self.hashTable = {} # a hashTable do nó possui as chaves do intervalo n-1 até n menos o n 
-        self.fingerTable = self.create_figerTable()
+        self.fingerTable = self.create_fingerTable()
+        self.sock = None
 
         # Iniciando o server do nó
         self.serverThread = threading.Thread(target=self.run_server)
@@ -47,12 +45,12 @@ class node:
 
         self.serverThread.start()
 
-    def create_figerTable(self):
+    def create_fingerTable(self):
         tempFingerTable = {}
         for i in range(3):
             row = [i+1, self.identifier + 2 ** i]
-            if row[1] > 5:
-                row[1] -= 5
+            if row[1] > len(tabelaRot):
+                row[1] -= len(tabelaRot)
             tempFingerTable[row[0]] = row[1]
         return tempFingerTable
 
@@ -63,11 +61,13 @@ class node:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, port))
         sock.listen(5)
+        self.sock = sock
 
         print(f"No {self.identifier} escutando em {host}: {port}")
         
         # recebimento dos pacotes, são tratados no handle_client
-        while True:
+        while not stop_event.is_set():
+
             nodeSock, nodeAddr = sock.accept()
 
             # dentro de nodeSock é possivel ver as informações de host e port que nós escolhemos
@@ -77,6 +77,7 @@ class node:
             threads.append(clientThread) # para o problema com as threads
 
             clientThread.start()
+
     
     # Função de tratamento dos pacotes recebidos
     def handle_client(self, nodeSock):
@@ -102,7 +103,7 @@ class node:
             nodeSock.close()
 
     #Função que manda pacotes responsaveis por comando para outros nós
-    def send_command(self, id, key, command):
+    def send_command(self, id, key, command): # parametro data
         try:
             Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             Sock.connect((tabelaRot[id]["host"], tabelaRot[id]["port"]))
@@ -119,46 +120,66 @@ class node:
 
     # Função que verifica se a chave está no intervalo desse nó
     def in_interval(self, key, limiteInferior, limiteSuperior):
-        if self.identifier == 1 and (key < 1 or key > 5):
+        if self.identifier == 1 and (key < 1 or key > len(tabelaRot)):
             return True
         return limiteInferior <= key < limiteSuperior
 
     # Função PUT utilizando a finger table
-    def put(self, key):
+    def put(self, key): # parametro data
         if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
             print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
             self.hashTable[key] = 'teste'
             return
 
-        nextNode = 6
+        # checa a finger table pelo nó que deve enviar
+        nextNode = len(tabelaRot) + 2
         for node in self.fingerTable.values():
             if abs(node - key) < nextNode:
                 nextNode = node
 
         self.send_command(nextNode, key, "PUT")   
 
+    # atualiza a finger table e a tabela de roteamento com os id's do nó novo
+    def update_routingTable(self):
+        self.fingerTable = self.create_fingerTable()
+        tabelaRot[self.identifier]["vizinhos"] = [self.identifier - 1, self.identifier + 1]
+        if self.identifier == 1:
+            tabelaRot[self.identifier]["vizinhos"][0] = len(tabelaRot)
+        if self.identifier == len(tabelaRot):
+            tabelaRot[self.identifier]["vizinhos"][1] = 1
+    
+    # redistribui os dados da hashTable para o novo nó
+    def redistribute_keys(self):
+        for data in self.hashTable.keys():
+            if self.in_interval(data, self.identifier, self.identifier + 0.99):
+                self.put(self, data)
+     
+# Função que adiciona um novo nó no final da rede
+def add_node(host, port):
+    tabelaRot[len(nodes)+1] = {"vizinhos": [], "host": host, "port": port}
+    new_node = Node(len(nodes)+1)
+    nodes.append(new_node)
+    for node in nodes:
+       node.update_routingTable()
+    nodes[-1].redistribute_keys()
+
 # Criação dos 5 nós
 nodes = []
 for nodeID in tabelaRot.keys():
-    nodeBase = node(nodeID)
+    nodeBase = Node(nodeID)
     nodes.append(nodeBase)
 
-
 # teste para o funcionamento da função PUT
-nodes[0].put2(1)
+nodes[0].put(1)
 
-time.sleep(1)
+add_node("127.0.0.6", 1236)
 
 try:
-    while True:
+    while not stop_event.is_set():
         time.sleep(3)
 except KeyboardInterrupt:
     stop_event.set()
     print("Finalizando threads...")
 
-# para o problema com as threads
-for thread in threads:
-    thread.join()
-
-print("aquif")
+print("final")
 
