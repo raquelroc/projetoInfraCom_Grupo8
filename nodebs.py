@@ -41,13 +41,24 @@ class node:
         # Iniciando o server do nó
         self.serverThread = threading.Thread(target=self.run_server)
         self.serverThread.daemon = True
-
         threads.append(self.serverThread) # para o problema com as threads
 
         self.serverThread.start()
+    
+    def node_operation(node_id, node_port, file_path, neighbors):
+        # Iniciar servidor
+        server_thread = threading.Thread(target=start_server, args=(node_id, node_port, file_path))
+        server_thread.start()
 
+        # Aguardar servidor iniciar
+        time.sleep(2)
+
+        # Solicitar arquivos dos vizinhos
+        for neighbor_id, neighbor_port in neighbors:
+            save_path = f"Nó{node_id}/arquivo_recebido_de_Nó{neighbor_id}.txt"
+            threading.Thread(target=request_file, args=(neighbor_id, neighbor_port, save_path)).start()
     # Funçao para criação do servidor desse nó
-    def run_server(self):
+    def run_server(self, file_path):
         # Criação do server do nó
         host, port = self.nodeInfo["host"], self.nodeInfo["port"]
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -59,7 +70,15 @@ class node:
         # recebimento dos pacotes, são tratados no handle_client
         while True:
             nodeSock, nodeAddr = sock.accept()
+            print(f"Conexão recebida de {nodeAddr}")
 
+            with open(file_path, 'rb') as file:
+                data = file.read()
+                nodeSock.sendall(data)
+        
+            nodeSock.close()
+            print(f"Arquivo enviado para {nodeAddr}")
+            
             # dentro de nodeSock é possivel ver as informações de host e port que nós escolhemos
             clientThread = threading.Thread(target=self.handle_client, args=(nodeSock,))
             clientThread.daemon = True
@@ -68,11 +87,23 @@ class node:
 
             clientThread.start()
     
+    
     # Função de tratamento dos pacotes recebidos
     def handle_client(self, nodeSock):
+        nodeSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        nodeSock.connect(('localhost', 1231))
+
         try:
-            arquivo = nodeSock.recv(1024).decode()
-            
+            with open(self.hashTable, 'wb') as file:
+                while True:
+                    arquivo = nodeSock.recv(1024).decode()
+                    if not arquivo:
+                        break
+                    file.write(arquivo)
+    
+            nodeSock.close()
+            print(f"Arquivo recebido de Nó {self.identifier} e salvo em {self.hashTable}")
+
             # transformando a string recebida em numero 
             requestedKey = 0
             requestedKey += int(arquivo[3])
@@ -84,7 +115,7 @@ class node:
             # caso um pacote chegue com o comando put a função put é chamada
             match arquivo[0:3]:
                 case "PUT":
-                    self.put(requestedKey)
+                    self.put(requestedKey, arquivo)
 
                 case "GET":
                     self.get(requestedKey)
@@ -142,6 +173,7 @@ class node:
             
         self.send_command(nextNode, key, "GET")
     
+
 
 # Criação dos 5 nós
 nodes = []
