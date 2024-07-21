@@ -2,6 +2,9 @@ import socket
 import threading
 import hashlib
 import time
+import timeit
+import os
+
 
 tabelaRot = {
     1: {"vizinhos": [5, 2], "host": "127.0.0.1", "port": 1231},
@@ -35,7 +38,7 @@ class Node:
         self.nodeInfo = tabelaRot[nodeID]
         self.hashTable = {} # a hashTable do nó possui as chaves do intervalo n-1 até n menos o n 
         self.fingerTable = self.create_fingerTable()
-        self.sock = None
+        self.filePath = f"Nó{self.identifier}/"
 
         # Iniciando o server do nó
         self.serverThread = threading.Thread(target=self.run_server)
@@ -61,13 +64,11 @@ class Node:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, port))
         sock.listen(5)
-        self.sock = sock
 
         print(f"No {self.identifier} escutando em {host}: {port}")
         
         # recebimento dos pacotes, são tratados no handle_client
         while not stop_event.is_set():
-
             nodeSock, nodeAddr = sock.accept()
 
             # dentro de nodeSock é possivel ver as informações de host e port que nós escolhemos
@@ -78,45 +79,73 @@ class Node:
 
             clientThread.start()
 
-    
     # Função de tratamento dos pacotes recebidos
     def handle_client(self, nodeSock):
         try:
-            arquivo = nodeSock.recv(1024).decode()
             
+            header = nodeSock.recv(1)
+            command_key_length = header.decode()
+
+            commandKey = nodeSock.recv(int(command_key_length)).decode()
+
+            data = nodeSock.recv(1024)
+
             # tratando casos de chaves inteiros
             requestedKey = 0
-            requestedKey += int(arquivo[3])
-            if len(arquivo) > 4 : requestedKey += int(arquivo[5]) * 0.1
-            if len(arquivo) > 5 : requestedKey += int(arquivo[6]) * 0.01
+            requestedKey += int(commandKey[3])
+            if len(commandKey) > 4 : requestedKey += int(commandKey[5]) * 0.1
+            if len(commandKey) > 5 : requestedKey += int(commandKey[6]) * 0.01
 
             # comandos
             # exemplo de comando enviado por pacote "PUT3" -> comando + key
             # caso um pacote chegue com o comando put a função put é chamada
-            match arquivo[0:3]:
+            match commandKey[0:3]:
                 case "PUT":
-                    self.put(requestedKey)
+                    
+                    if self.in_interval(requestedKey, self.identifier-1, self.identifier-1 + 0.99):
+                        self.put(requestedKey, f"{self.filePath}novo_arquivo.txt" , data)
+                    else:
+                        nextNode = len(tabelaRot) + 2
+                        for node in self.fingerTable.values():
+                            if abs(node - requestedKey) < abs(nextNode - requestedKey):
+                                nextNode = node
+                        
+                        self.send_command(self.identifier, requestedKey, "PUT", None, data)
+                    
+                case "GET":
+                    self.get(requestedKey)
 
         finally:
             # pacotes normais
-            print(f"o no {self.identifier} recebeu um arquivo do endereco {nodeSock.getsockname()}: {arquivo}")
+            # print(f"o no {self.identifier} recebeu um arquivo do endereco {nodeSock.getsockname()}: {arquivo}")
             nodeSock.close()
 
     #Função que manda pacotes responsaveis por comando para outros nós
-    def send_command(self, id, key, command): # parametro data
+    def send_command(self, id, key, command, file_path = None, data = None):
         try:
             Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             Sock.connect((tabelaRot[id]["host"], tabelaRot[id]["port"]))
+            
+            command_key = f"{command}{key}".encode()
+            command_key_length = len(command_key)
 
-            arquivo = f"{command}{key}"
+            header = f"{command_key_length}".encode()
 
-            Sock.send(arquivo.encode())
+            if data == None:
+                with open(file_path, 'rb') as file:
+                    extratedData = file.read()
+
+                arquivo = header + command_key + extratedData
+            else: 
+                arquivo = header + command_key + data
+
+            Sock.send(arquivo)
             Sock.close()
         except ConnectionRefusedError:
                 print(f"o no {id} nao esta disponivel")
         except Exception as e:
             print(f"aqui {e}")
-            print(f"erro ao enviar arquivo do no {nodeID} para o no {id}")
+            print(f"erro ao enviar arquivo do no {self.identifier} para o no {id}")
 
     # Função que verifica se a chave está no intervalo desse nó
     def in_interval(self, key, limiteInferior, limiteSuperior):
@@ -125,22 +154,40 @@ class Node:
         return limiteInferior <= key < limiteSuperior
 
     # Função PUT utilizando a finger table
-    def put(self, key): # parametro data
+    def put(self, key, filepath, data = None): # parametro data
         if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
-            print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
-            self.hashTable[key] = 'teste'
-            return
+            # print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
+            self.hashTable[key] = filepath
+            if data != None:
+                with open(self.filePath, 'wb') as file:
+                    file.write(data)
+                return
 
+        # checa a finger table pelo nó que deve enviar
+        nextNode = len(tabelaRot) + 2
+        for node in self.fingerTable.values():
+            if abs(node - key) < abs(nextNode - key):
+                nextNode = node
+        
+        self.send_command(nextNode, key, "PUT", filepath)   
+    
+    def get(self, key):
+        if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
+            if key in self.hashTable.keys():
+                return self.hashTable[key]
+            else:
+                return "chave não existe"
+            
         # checa a finger table pelo nó que deve enviar
         nextNode = len(tabelaRot) + 2
         for node in self.fingerTable.values():
             if abs(node - key) < nextNode:
                 nextNode = node
-
-        self.send_command(nextNode, key, "PUT")   
+        
+        self.send_command(nextNode, key, "GET")  
 
     # atualiza a finger table e a tabela de roteamento com os id's do nó novo
-    def update_routingTable(self):
+    def update_routingTable(self): 
         self.fingerTable = self.create_fingerTable()
         tabelaRot[self.identifier]["vizinhos"] = [self.identifier - 1, self.identifier + 1]
         if self.identifier == 1:
@@ -168,11 +215,34 @@ nodes = []
 for nodeID in tabelaRot.keys():
     nodeBase = Node(nodeID)
     nodes.append(nodeBase)
+    os.makedirs(f"Nó{nodeID}", exist_ok=True)
 
-# teste para o funcionamento da função PUT
-nodes[0].put(1)
 
-add_node("127.0.0.6", 1236)
+
+nodes[0].put(1.28, 'Nó1/arquivo.txt')
+
+time.sleep(1)
+
+print(nodes[1].hashTable)
+
+"""
+key = hash_key("some_key")
+
+def test_put(nodes, key):
+    nodes[0].put(key)
+
+def test_get(nodes, key):
+    nodes[0].get(key)
+
+
+# Medir desempenho de PUT
+put_time = timeit.timeit(lambda: test_put(nodes, key), number=10)
+print(f"Tempo médio de PUT: {put_time / 100:.6f} segundos")
+
+# Medir desempenho de GET
+get_time = timeit.timeit(lambda: test_get(nodes, key), number=10)
+print(f"Tempo médio de GET: {get_time / 100:.6f} segundos")
+"""
 
 try:
     while not stop_event.is_set():
@@ -180,6 +250,3 @@ try:
 except KeyboardInterrupt:
     stop_event.set()
     print("Finalizando threads...")
-
-print("final")
-
