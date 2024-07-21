@@ -2,6 +2,8 @@ import socket
 import threading
 import hashlib
 import time
+import timeit
+import os
 
 tabelaRot = {
     1: {"vizinhos": [5, 2], "host": "127.0.0.1", "port": 1231},
@@ -31,12 +33,14 @@ def hash_key(key, lowerBound=0, upperBound=5, decimals=2):
 # - Ao rodar o programa ele fica aberto, para rodar novamente feche o terminal 
 # - fiz isso para evitar um problema onde as threads daemon ainda estavam
 # - em execução enquanto o interpretador Python finalizava 
-class node:
+class Node:
     def __init__(self, nodeID):
         # criação dos atributos do nó
         self.identifier = nodeID
         self.nodeInfo = tabelaRot[nodeID]
         self.hashTable = {} # a hashTable do nó possui as chaves do intervalo n-1 até n menos o n 
+        self.filePath = f"Nó{self.identifier}/"
+        self.lock = threading.Lock()
 
         # Iniciando o server do nó
         self.serverThread = threading.Thread(target=self.run_server)
@@ -57,7 +61,7 @@ class node:
         print(f"No {self.identifier} escutando em {host}: {port}")
         
         # recebimento dos pacotes, são tratados no handle_client
-        while True:
+        while not stop_event.is_set():
             nodeSock, nodeAddr = sock.accept()
 
             # dentro de nodeSock é possivel ver as informações de host e port que nós escolhemos
@@ -71,37 +75,59 @@ class node:
     # Função de tratamento dos pacotes recebidos
     def handle_client(self, nodeSock):
         try:
-            arquivo = nodeSock.recv(1024).decode()
+            header = nodeSock.recv(1)
+            command_key_length = header.decode()
+
+            commandKey = nodeSock.recv(int(command_key_length)).decode()
+
+            data = nodeSock.recv(1024)
             
-            # transformando a string recebida em numero 
+             # tratando casos de chaves inteiros
             requestedKey = 0
-            requestedKey += int(arquivo[3])
-            if len(arquivo) > 4 : requestedKey += int(arquivo[5]) * 0.1
-            if len(arquivo) > 5 : requestedKey += int(arquivo[6]) * 0.01
+            requestedKey += int(commandKey[3])
+            if len(commandKey) > 4 : requestedKey += int(commandKey[5]) * 0.1
+            if len(commandKey) > 5 : requestedKey = round(requestedKey + int(commandKey[6]) * 0.01, 2)
 
             # comandos
             # exemplo de comando enviado por pacote "PUT3" -> comando + key
             # caso um pacote chegue com o comando put a função put é chamada
-            match arquivo[0:3]:
+            match commandKey[0:3]:
                 case "PUT":
-                    self.put(requestedKey)
-
+                    if self.in_interval(requestedKey, self.identifier-1, self.identifier-1 + 0.99):
+                        self.put(requestedKey, f"{self.filePath}novo_arquivo.txt" , data)
+                    else:
+                        self.nodeInfo["vizinhos"][1]
+                        
+                        self.send_command(self.identifier, requestedKey, "PUT", None, data)
+                    
                 case "GET":
                     self.get(requestedKey)
+
         finally:
             # pacotes normais
-            print(f"o no {self.identifier} recebeu um arquivo do endereco {nodeSock.getsockname()}: {arquivo}")
+            # print(f"o no {self.identifier} recebeu um arquivo do endereco {nodeSock.getsockname()}: {arquivo}")
             nodeSock.close()
 
     #Função que manda pacotes responsaveis por comandos para outros nós
-    def send_command(self, id, key, command):
+    def send_command(self, id, key, command, file_path = None, data = None):
         try:
             Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             Sock.connect((tabelaRot[id]["host"], tabelaRot[id]["port"]))
 
-            arquivo = f"{command}{key}"
+            command_key = f"{command}{key}".encode()
+            command_key_length = len(command_key)
 
-            Sock.send(arquivo.encode())
+            header = f"{command_key_length}".encode()
+            
+            if data == None:
+                with open(file_path, 'rb') as file:
+                    extratedData = file.read()
+
+                arquivo = header + command_key + extratedData
+            else: 
+                arquivo = header + command_key + data
+            
+            Sock.send(arquivo)
             Sock.close()
         except ConnectionRefusedError:
                 print(f"o no {id} nao esta disponivel")
@@ -116,21 +142,25 @@ class node:
         return limiteInferior <= key < limiteSuperior
 
     # Função PUT utilizando busca sequencial
-    def put(self, key):
+    def put(self, key, filepath, data = None):
         nextNode = self.nodeInfo["vizinhos"][1]
         
         if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
             self.hashTable[key] = 'teste'
             print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
-            return
+            self.hashTable[key] = filepath
+            if data != None:
+                with self.lock:
+                    try:
+                        with open(filepath, 'wb') as file:
+                            file.write(data)
+                    except PermissionError as e:
+                        print("Erro de permissão")
+                return
 
-        self.send_command(nextNode, key, "PUT")
+        self.send_command(nextNode, key, "PUT", filepath)
 
-    # Função para a função GET *não esta funcinando*
-    # - caso o nó atual não seja o desejado ele irá identificar 
-    # - qual vizinho está mais perto do intervalo desejado 
-    # PROBLEMA: ainda não foi implementado o retorno da busca 
-    # - para o nó que fez a solicitação inicialmente      
+    
     def get(self, key):
         nextNode = self.nodeInfo["vizinhos"][1]
 
@@ -142,23 +172,60 @@ class node:
             
         self.send_command(nextNode, key, "GET")
     
+     # atualiza a finger table e a tabela de roteamento com os id's do nó novo
+    def update_routingTable(self): 
+        self.fingerTable = self.create_fingerTable()
+        tabelaRot[self.identifier]["vizinhos"] = [self.identifier - 1, self.identifier + 1]
+        if self.identifier == 1:
+            tabelaRot[self.identifier]["vizinhos"][0] = len(tabelaRot)
+        if self.identifier == len(tabelaRot):
+            tabelaRot[self.identifier]["vizinhos"][1] = 1
+    
+    # redistribui os dados da hashTable para o novo nó
+    def redistribute_keys(self):
+        for data in self.hashTable.keys():
+            if self.in_interval(data, self.identifier, self.identifier + 0.99):
+                self.put(self, data)
+
+# Função que adiciona um novo nó no final da rede
+def add_node(host, port):
+    tabelaRot[len(nodes)+1] = {"vizinhos": [], "host": host, "port": port}
+    new_node = Node(len(nodes)+1)
+    nodes.append(new_node)
+    for node in nodes:
+       node.update_routingTable()
+    nodes[-1].redistribute_keys()
 
 # Criação dos 5 nós
 nodes = []
 for nodeID in tabelaRot.keys():
-    nodeBase = node(nodeID)
+    nodeBase = Node(nodeID)
     nodes.append(nodeBase)
+os.makedirs(f"Nó{nodeID}", exist_ok=True)
+
+
+nodes[0].put(1.28, 'Nó1/arquivo.txt')
+nodes[0].put(2.33, 'Nó1/arquivo.txt')
+nodes[0].put(3.84, 'Nó1/arquivo.txt')
+nodes[0].put(4.56, 'Nó1/arquivo.txt')
+
+time.sleep(1)
+
+
+key = hash_key("some_key")
+
+def test_put(nodes, key):
+    nodes[0].put(key, 'Nó1/arquivo.txt')
+
+# Medir desempenho de PUT
+put_time = timeit.timeit(lambda: test_put(nodes, key), number=10)
+print(f"Tempo médio de PUT: {put_time / 100:.6f} segundos")
+
 
 try:
-    while True:
+    while not stop_event.is_set():
         time.sleep(3)
 except KeyboardInterrupt:
     stop_event.set()
     print("Finalizando threads...")
-
-# para o problema com as threads
-for thread in threads:
-    thread.join()
-
-print("aquif")
 

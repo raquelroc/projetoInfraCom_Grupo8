@@ -234,24 +234,15 @@ nodes[0].put(4.56, 'Nó1/arquivo.txt')
 time.sleep(1)
 
 
-"""
 key = hash_key("some_key")
 
 def test_put(nodes, key):
-    nodes[0].put(key)
-
-def test_get(nodes, key):
-    nodes[0].get(key)
-
+    nodes[0].put(key, 'Nó1/arquivo.txt')
 
 # Medir desempenho de PUT
 put_time = timeit.timeit(lambda: test_put(nodes, key), number=10)
 print(f"Tempo médio de PUT: {put_time / 100:.6f} segundos")
 
-# Medir desempenho de GET
-get_time = timeit.timeit(lambda: test_get(nodes, key), number=10)
-print(f"Tempo médio de GET: {get_time / 100:.6f} segundos")
-"""
 
 try:
     while not stop_event.is_set():
