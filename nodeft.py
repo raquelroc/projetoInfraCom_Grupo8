@@ -158,9 +158,13 @@ class Node:
         if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
             # print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
             self.hashTable[key] = filepath
+            print(filepath)
             if data != None:
-                with open(self.filePath, 'wb') as file:
-                    file.write(data)
+                try:
+                    with open(filepath, 'wb') as file:
+                        file.write(data)
+                except PermissionError as e:
+                    print("Erro de permissão")
                 return
 
         # checa a finger table pelo nó que deve enviar
@@ -215,8 +219,9 @@ nodes = []
 for nodeID in tabelaRot.keys():
     nodeBase = Node(nodeID)
     nodes.append(nodeBase)
-    os.makedirs(f"Nó{nodeID}", exist_ok=True)
 
+
+os.makedirs(f"Nó{nodeID}", exist_ok=True)
 
 
 nodes[0].put(1.28, 'Nó1/arquivo.txt')
