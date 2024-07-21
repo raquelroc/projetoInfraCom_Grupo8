@@ -39,6 +39,7 @@ class Node:
         self.hashTable = {} # a hashTable do nó possui as chaves do intervalo n-1 até n menos o n 
         self.fingerTable = self.create_fingerTable()
         self.filePath = f"Nó{self.identifier}/"
+        self.lock = threading.Lock()
 
         # Iniciando o server do nó
         self.serverThread = threading.Thread(target=self.run_server)
@@ -82,7 +83,6 @@ class Node:
     # Função de tratamento dos pacotes recebidos
     def handle_client(self, nodeSock):
         try:
-            
             header = nodeSock.recv(1)
             command_key_length = header.decode()
 
@@ -92,25 +92,26 @@ class Node:
 
             # tratando casos de chaves inteiros
             requestedKey = 0
+            
             requestedKey += int(commandKey[3])
+            
             if len(commandKey) > 4 : requestedKey += int(commandKey[5]) * 0.1
-            if len(commandKey) > 5 : requestedKey += int(commandKey[6]) * 0.01
-
+            if len(commandKey) > 5 : requestedKey = round(requestedKey + int(commandKey[6]) * 0.01, 2) 
+                           
             # comandos
             # exemplo de comando enviado por pacote "PUT3" -> comando + key
             # caso um pacote chegue com o comando put a função put é chamada
             match commandKey[0:3]:
                 case "PUT":
-                    
                     if self.in_interval(requestedKey, self.identifier-1, self.identifier-1 + 0.99):
-                        self.put(requestedKey, f"{self.filePath}novo_arquivo.txt" , data)
+                        self.put(requestedKey, f"{self.filePath}novo_arquivo.txt" , data)   
+                        
                     else:
                         nextNode = len(tabelaRot) + 2
                         for node in self.fingerTable.values():
                             if abs(node - requestedKey) < abs(nextNode - requestedKey):
                                 nextNode = node
-                        
-                        self.send_command(self.identifier, requestedKey, "PUT", None, data)
+                        self.send_command(nextNode, requestedKey, "PUT", None, data)
                     
                 case "GET":
                     self.get(requestedKey)
@@ -126,11 +127,12 @@ class Node:
             Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             Sock.connect((tabelaRot[id]["host"], tabelaRot[id]["port"]))
             
+
             command_key = f"{command}{key}".encode()
             command_key_length = len(command_key)
 
             header = f"{command_key_length}".encode()
-
+            
             if data == None:
                 with open(file_path, 'rb') as file:
                     extratedData = file.read()
@@ -138,7 +140,7 @@ class Node:
                 arquivo = header + command_key + extratedData
             else: 
                 arquivo = header + command_key + data
-
+            
             Sock.send(arquivo)
             Sock.close()
         except ConnectionRefusedError:
@@ -156,15 +158,15 @@ class Node:
     # Função PUT utilizando a finger table
     def put(self, key, filepath, data = None): # parametro data
         if self.in_interval(key, self.identifier-1, self.identifier-1 + 0.99):
-            # print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
+            print(f"o nó {self.identifier} armazenou o arquivo 'teste' com a chave {key}")
             self.hashTable[key] = filepath
-            print(filepath)
             if data != None:
-                try:
-                    with open(filepath, 'wb') as file:
-                        file.write(data)
-                except PermissionError as e:
-                    print("Erro de permissão")
+                with self.lock:
+                    try:
+                        with open(filepath, 'wb') as file:
+                            file.write(data)
+                    except PermissionError as e:
+                        print("Erro de permissão")
                 return
 
         # checa a finger table pelo nó que deve enviar
@@ -225,10 +227,12 @@ os.makedirs(f"Nó{nodeID}", exist_ok=True)
 
 
 nodes[0].put(1.28, 'Nó1/arquivo.txt')
+nodes[0].put(2.33, 'Nó1/arquivo.txt')
+nodes[0].put(3.84, 'Nó1/arquivo.txt')
+nodes[0].put(4.56, 'Nó1/arquivo.txt')
 
 time.sleep(1)
 
-print(nodes[1].hashTable)
 
 """
 key = hash_key("some_key")
